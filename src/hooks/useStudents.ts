@@ -51,6 +51,15 @@ export function useStudents(userId: string | null) {
   const latest = useRef<Student[]>([]);
   const skipSave = useRef(false);
 
+  // Ref of the students array as it was after the last successful load or save.
+  // Used to diff local changes so we only upsert students whose reference actually
+  // changed, and only delete ids we knew about and are now missing.
+  const lastSynced = useRef<Student[]>([]);
+
+  // Serialize saves so two never run concurrently.
+  const saveRunning = useRef(false);
+  const saveQueued = useRef(false);
+
   useEffect(() => { latest.current = students; }, [students]);
 
   // Load from Supabase when user changes
@@ -73,6 +82,7 @@ export function useStudents(userId: string | null) {
         .map((r) => r.data as unknown)
         .filter(isStudent);
       skipSave.current = true;
+      lastSynced.current = loaded;
       setStudents(loaded);
       setStorageOk(true);
       setLoading(false);
@@ -83,48 +93,104 @@ export function useStudents(userId: string | null) {
   // Save to Supabase on every student change
   useEffect(() => {
     if (!userId) return;
-    if (skipSave.current) { skipSave.current = false; return; }
-    // No-op: actual save is in saveDelta
-    saveDelta();
+    if (skipSave.current) {
+      skipSave.current = false;
+      lastSynced.current = latest.current;
+      return;
+    }
+    void requestSave();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [students, userId]);
 
-  const saveDelta = useCallback(async () => {
+  const runSave = useCallback(async () => {
     if (!userId) return;
     const current = latest.current;
-    const rows = current.map((s) => ({
-      user_id: userId,
-      id: s.id,
-      data: s as unknown as Record<string, unknown>,
-    }));
+    const synced = lastSynced.current;
 
-    // Upsert all current students
-    if (rows.length > 0) {
+    // Diff by reference: only upsert students that are new or changed.
+    const syncedMap = new Map(synced.map((s) => [s.id, s]));
+    const toUpsert = current.filter((s) => syncedMap.get(s.id) !== s);
+
+    // Only delete ids that were in the last-synced set and are now missing locally.
+    // Never query remote for deletes — that would clobber other devices' additions.
+    const currentIds = new Set(current.map((s) => s.id));
+    const toDeleteIds = synced
+      .filter((s) => !currentIds.has(s.id))
+      .map((s) => s.id);
+
+    if (toUpsert.length > 0) {
+      const rows = toUpsert.map((s) => ({
+        user_id: userId,
+        id: s.id,
+        data: s as unknown as Record<string, unknown>,
+      }));
       const { error: upErr } = await supabase
         .from('students')
         .upsert(rows, { onConflict: 'user_id,id' });
       if (upErr) { setStorageOk(false); return; }
     }
 
-    // Delete students that no longer exist locally
-    // Fetch current remote ids to find removed ones
-    const { data: remote, error: selErr } = await supabase
-      .from('students')
-      .select('id')
-      .eq('user_id', userId);
-    if (selErr) { setStorageOk(false); return; }
-    const localIds = new Set(current.map((s) => s.id));
-    const toDelete = (remote ?? []).filter((r) => !localIds.has(r.id));
-    if (toDelete.length > 0) {
+    if (toDeleteIds.length > 0) {
       const { error: delErr } = await supabase
         .from('students')
         .delete()
-        .in('id', toDelete.map((r) => r.id))
+        .in('id', toDeleteIds)
         .eq('user_id', userId);
       if (delErr) { setStorageOk(false); return; }
     }
+
+    lastSynced.current = current;
     setStorageOk(true);
   }, [userId]);
+
+  const requestSave = useCallback(async () => {
+    if (saveRunning.current) {
+      saveQueued.current = true;
+      return;
+    }
+    saveRunning.current = true;
+    await runSave();
+    saveRunning.current = false;
+    while (saveQueued.current) {
+      saveQueued.current = false;
+      saveRunning.current = true;
+      await runSave();
+      saveRunning.current = false;
+    }
+  }, [runSave]);
+
+  const reload = useCallback(async () => {
+    if (!userId) return;
+    if (saveRunning.current || saveQueued.current) return;
+    const { data, error } = await supabase
+      .from('students')
+      .select('data')
+      .eq('user_id', userId);
+    if (error) return;
+    // A save may have started during the fetch; abort if so.
+    if (saveRunning.current || saveQueued.current) return;
+    const loaded = (data ?? [])
+      .map((r) => r.data as unknown)
+      .filter(isStudent);
+    skipSave.current = true;
+    lastSynced.current = loaded;
+    setStudents(loaded);
+  }, [userId]);
+
+  // Reload when the tab becomes visible or focused, so other devices' changes appear.
+  useEffect(() => {
+    if (!userId) return;
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void reload();
+    };
+    const onFocus = () => void reload();
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onFocus);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [userId, reload]);
 
   const mutate = useCallback((fn: (prev: Student[]) => Student[]) => {
     setStudents(fn);
@@ -236,7 +302,8 @@ export function useStudents(userId: string | null) {
       .from('students')
       .upsert(rows, { onConflict: 'user_id,id' });
     if (error) { setStorageOk(false); return; }
-    // Merge into local state
+    // Merge into local state and update lastSynced so the save effect
+    // doesn't re-upsert them.
     skipSave.current = true;
     setStudents((prev) => {
       const next = [...prev];
@@ -245,6 +312,7 @@ export function useStudents(userId: string | null) {
         if (i >= 0) next[i] = s;
         else next.push(s);
       });
+      lastSynced.current = next;
       return next;
     });
     try { localStorage.setItem(MIGRATED_KEY, '1'); } catch { /* ignore */ }
