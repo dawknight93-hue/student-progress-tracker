@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Download, Plus, Upload } from 'lucide-react';
+import type { Session } from '@supabase/supabase-js';
+import { Download, LogOut, Plus, Upload } from 'lucide-react';
 import { Board } from './components/Board';
 import type { SortKey } from './components/Board';
 import { LogModal } from './components/LogModal';
+import { SignIn } from './components/SignIn';
 import { StudentDetail } from './components/StudentDetail';
 import { StudentModal } from './components/StudentModal';
 import type { StudentFields } from './components/StudentModal';
 import { Toast } from './components/Toast';
 import { COURSES } from './curriculum';
 import { useStudents } from './hooks/useStudents';
+import { supabase } from './lib/supabase';
 import { todayStr } from './lib/dates';
 import { summarize } from './lib/progress';
 import type { LogEntry } from './types';
@@ -30,7 +33,33 @@ type Modal =
   | null;
 
 export default function App() {
-  const store = useStudents();
+  const [session, setSession] = useState<Session | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setAuthReady(true);
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, sess) => {
+      setSession(sess);
+    });
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  if (!authReady) {
+    return <div className="mx-auto flex min-h-screen max-w-[1100px] items-center justify-center px-4 py-6 text-muted">Loading…</div>;
+  }
+
+  if (!session) {
+    return <SignIn />;
+  }
+
+  return <Tracker userId={session.user.id} email={session.user.email ?? ''} />;
+}
+
+function Tracker({ userId, email }: { userId: string; email: string }) {
+  const store = useStudents(userId);
   const { students } = store;
   const [openId, setOpenId] = useState<string | null>(null);
   const [modal, setModal] = useState<Modal>(null);
@@ -50,7 +79,6 @@ export default function App() {
   }, [recapDays]);
 
   const open = openId ? students.find((s) => s.id === openId) ?? null : null;
-  // If the open student disappears (deleted, imported over), fall back to the board.
   useEffect(() => {
     if (openId && !open) setOpenId(null);
   }, [openId, open]);
@@ -101,6 +129,10 @@ export default function App() {
     if (fileRef.current) fileRef.current.value = '';
   };
 
+  const signOut = async () => {
+    await supabase.auth.signOut();
+  };
+
   const editing = modal?.kind === 'student' && modal.editId ? students.find((s) => s.id === modal.editId) ?? null : null;
 
   return (
@@ -110,6 +142,15 @@ export default function App() {
           <div className="eyebrow">Ground school</div>
           <h1 className="text-[44px] leading-none">Student Progress Tracker</h1>
         </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[13px] text-muted">{email}</span>
+          <button type="button" className="btn" onClick={signOut}>
+            <LogOut size={15} aria-hidden="true" /> Sign out
+          </button>
+        </div>
+      </header>
+
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <label className="flex items-center gap-2 text-[13px] text-muted" htmlFor="recap-days">
             Recap after
@@ -138,50 +179,66 @@ export default function App() {
             <Plus size={15} aria-hidden="true" /> Add student
           </button>
         </div>
-      </header>
+      </div>
 
-      {!store.storageOk && (
-        <div role="alert" className="rounded border border-warn bg-warnBg px-3 py-2 text-warn">
-          This browser is not saving data (private window or blocked storage). Use Export to keep a copy before you close the tab.
+      {store.migrationVisible && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-accent bg-surface px-4 py-3">
+          <span className="text-sm">
+            Found {store.migrationCount} {store.migrationCount === 1 ? 'student' : 'students'} saved in this browser. Upload them to your account?
+          </span>
+          <div className="flex gap-2">
+            <button type="button" className="btn btn-primary" onClick={() => void store.uploadMigration()}>Upload</button>
+            <button type="button" className="btn" onClick={store.dismissMigration}>Not now</button>
+          </div>
         </div>
       )}
 
-      <main className="flex flex-col gap-4">
-        {open ? (
-          <StudentDetail
-            student={open}
-            recapDays={recapDays}
-            onBack={() => setOpenId(null)}
-            onEdit={() => setModal({ kind: 'student', editId: open.id })}
-            onLog={(n, entry) => setModal({ kind: 'log', lessonNum: n ?? COURSES[open.courseId].lessons[0].n, entry })}
-            onUpdate={(patch) => store.updateStudent(open.id, patch)}
-            onDelete={() => {
-              store.deleteStudent(open.id);
-              setOpenId(null);
-              setToast('Student deleted.');
-            }}
-            onDeleteLog={(logId) => {
-              store.updateStudent(open.id, { logs: open.logs.filter((l) => l.id !== logId) });
-              setToast('Entry deleted.');
-            }}
-          />
-        ) : (
-          <Board
-            students={students}
-            recapDays={recapDays}
-            sortBy={sortBy}
-            showArchived={showArchived}
-            onSort={setSortBy}
-            onShowArchived={setShowArchived}
-            onOpen={setOpenId}
-            onAdd={() => setModal({ kind: 'student', editId: null })}
-            onExample={() => setOpenId(store.addExample())}
-          />
-        )}
-      </main>
+      {!store.storageOk && (
+        <div role="alert" className="rounded border border-warn bg-warnBg px-3 py-2 text-warn">
+          Could not save to your account. Your changes may not sync. Use Export to keep a backup.
+        </div>
+      )}
+
+      {store.loading ? (
+        <div className="py-10 text-center text-muted">Loading your students…</div>
+      ) : (
+        <main className="flex flex-col gap-4">
+          {open ? (
+            <StudentDetail
+              student={open}
+              recapDays={recapDays}
+              onBack={() => setOpenId(null)}
+              onEdit={() => setModal({ kind: 'student', editId: open.id })}
+              onLog={(n, entry) => setModal({ kind: 'log', lessonNum: n ?? COURSES[open.courseId].lessons[0].n, entry })}
+              onUpdate={(patch) => store.updateStudent(open.id, patch)}
+              onDelete={() => {
+                store.deleteStudent(open.id);
+                setOpenId(null);
+                setToast('Student deleted.');
+              }}
+              onDeleteLog={(logId) => {
+                store.updateStudent(open.id, { logs: open.logs.filter((l) => l.id !== logId) });
+                setToast('Entry deleted.');
+              }}
+            />
+          ) : (
+            <Board
+              students={students}
+              recapDays={recapDays}
+              sortBy={sortBy}
+              showArchived={showArchived}
+              onSort={setSortBy}
+              onShowArchived={setShowArchived}
+              onOpen={setOpenId}
+              onAdd={() => setModal({ kind: 'student', editId: null })}
+              onExample={() => setOpenId(store.addExample())}
+            />
+          )}
+        </main>
+      )}
 
       <footer className="mt-auto pt-4 text-[12.5px] text-muted">
-        Data is saved in this browser only. Use Export to back it up or move it to another device.
+        Data is saved to your account and syncs across devices. Use Export for a backup.
       </footer>
 
       {modal?.kind === 'student' && <StudentModal editing={editing} onSave={saveStudent} onClose={() => setModal(null)} />}

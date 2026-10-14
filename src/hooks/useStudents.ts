@@ -1,41 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { COURSES } from '../curriculum';
 import { daysAgoStr, todayStr, uid } from '../lib/dates';
+import { supabase } from '../lib/supabase';
 import type { Student } from '../types';
 
-const KEY = 'student-progress-tracker:v1';
+const OLD_KEY = 'student-progress-tracker:v1';
+const MIGRATED_KEY = 'student-progress-tracker:v1:migrated';
 
-interface ReadResult {
+interface MigrationData {
   students: Student[];
-  ok: boolean;
+  dismissed: boolean;
 }
 
-function readStore(): ReadResult {
-  let raw: string | null = null;
+function readMigration(): MigrationData {
   try {
-    raw = localStorage.getItem(KEY);
-    if (!raw) return { students: [], ok: true };
+    const raw = localStorage.getItem(OLD_KEY);
+    if (!raw) return { students: [], dismissed: false };
     const parsed = JSON.parse(raw) as { students?: Student[] };
-    return { students: Array.isArray(parsed.students) ? parsed.students : [], ok: true };
-  } catch (err) {
-    console.error('Could not read saved students', err);
-    // Keep a copy of anything unreadable so it is never silently overwritten.
-    try {
-      if (raw) localStorage.setItem(KEY + ':unreadable', raw);
-    } catch {
-      /* ignore */
-    }
-    return { students: [], ok: false };
-  }
-}
-
-function writeStore(students: Student[]): boolean {
-  try {
-    localStorage.setItem(KEY, JSON.stringify({ version: 1, students }));
-    return true;
-  } catch (err) {
-    console.error('Could not save students', err);
-    return false;
+    const students = Array.isArray(parsed.students) ? parsed.students : [];
+    return { students, dismissed: false };
+  } catch {
+    return { students: [], dismissed: false };
   }
 }
 
@@ -59,37 +44,89 @@ export interface NewStudent {
   testDate: string;
 }
 
-export function useStudents() {
-  const [initial] = useState<ReadResult>(readStore);
-  const [students, setStudents] = useState<Student[]>(initial.students);
-  const [storageOk, setStorageOk] = useState<boolean>(initial.ok);
-  const latest = useRef<Student[]>(students);
-  const changed = useRef(false);
+export function useStudents(userId: string | null) {
+  const [students, setStudents] = useState<Student[]>([]);
+  const [storageOk, setStorageOk] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const latest = useRef<Student[]>([]);
+  const skipSave = useRef(false);
 
-  useEffect(() => {
-    latest.current = students;
-    if (!changed.current) return; // do not write back what we just read
-    setStorageOk(writeStore(students));
-  }, [students]);
+  useEffect(() => { latest.current = students; }, [students]);
 
-  // Flush on the way out so a closed tab never loses the last edit.
+  // Load from Supabase when user changes
   useEffect(() => {
-    const flush = () => {
-      if (changed.current) writeStore(latest.current);
-    };
-    const onHide = () => {
-      if (document.visibilityState === 'hidden') flush();
-    };
-    window.addEventListener('beforeunload', flush);
-    document.addEventListener('visibilitychange', onHide);
-    return () => {
-      window.removeEventListener('beforeunload', flush);
-      document.removeEventListener('visibilitychange', onHide);
-    };
-  }, []);
+    if (!userId) { setStudents([]); setLoading(false); return; }
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      const { data, error } = await supabase
+        .from('students')
+        .select('data')
+        .eq('user_id', userId);
+      if (cancelled) return;
+      if (error) {
+        setStorageOk(false);
+        setLoading(false);
+        return;
+      }
+      const loaded = (data ?? [])
+        .map((r) => r.data as unknown)
+        .filter(isStudent);
+      skipSave.current = true;
+      setStudents(loaded);
+      setStorageOk(true);
+      setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [userId]);
+
+  // Save to Supabase on every student change
+  useEffect(() => {
+    if (!userId) return;
+    if (skipSave.current) { skipSave.current = false; return; }
+    // No-op: actual save is in saveDelta
+    saveDelta();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [students, userId]);
+
+  const saveDelta = useCallback(async () => {
+    if (!userId) return;
+    const current = latest.current;
+    const rows = current.map((s) => ({
+      user_id: userId,
+      id: s.id,
+      data: s as unknown as Record<string, unknown>,
+    }));
+
+    // Upsert all current students
+    if (rows.length > 0) {
+      const { error: upErr } = await supabase
+        .from('students')
+        .upsert(rows, { onConflict: 'user_id,id' });
+      if (upErr) { setStorageOk(false); return; }
+    }
+
+    // Delete students that no longer exist locally
+    // Fetch current remote ids to find removed ones
+    const { data: remote, error: selErr } = await supabase
+      .from('students')
+      .select('id')
+      .eq('user_id', userId);
+    if (selErr) { setStorageOk(false); return; }
+    const localIds = new Set(current.map((s) => s.id));
+    const toDelete = (remote ?? []).filter((r) => !localIds.has(r.id));
+    if (toDelete.length > 0) {
+      const { error: delErr } = await supabase
+        .from('students')
+        .delete()
+        .in('id', toDelete.map((r) => r.id))
+        .eq('user_id', userId);
+      if (delErr) { setStorageOk(false); return; }
+    }
+    setStorageOk(true);
+  }, [userId]);
 
   const mutate = useCallback((fn: (prev: Student[]) => Student[]) => {
-    changed.current = true;
     setStudents(fn);
   }, []);
 
@@ -150,7 +187,6 @@ export function useStudents() {
     return JSON.stringify({ app: 'student-progress-tracker', version: 1, exportedAt: todayStr(), students: latest.current }, null, 2);
   }, []);
 
-  /** Merges by student id: matching students are replaced, new ones are added. */
   const importJson = useCallback(
     (text: string): { added: number; replaced: number } => {
       const parsed = JSON.parse(text) as { students?: unknown[] };
@@ -173,5 +209,65 @@ export function useStudents() {
     [mutate]
   );
 
-  return { students, storageOk, addStudent, updateStudent, deleteStudent, addExample, exportJson, importJson };
+  const migration = useRef<MigrationData>({ students: [], dismissed: false });
+  const [migrationVisible, setMigrationVisible] = useState(false);
+
+  useEffect(() => {
+    if (!userId) return;
+    try {
+      if (localStorage.getItem(MIGRATED_KEY)) return;
+    } catch { return; }
+    const m = readMigration();
+    if (m.students.length > 0) {
+      migration.current = m;
+      setMigrationVisible(true);
+    }
+  }, [userId]);
+
+  const uploadMigration = useCallback(async () => {
+    const m = migration.current;
+    if (!userId || m.students.length === 0) return;
+    const rows = m.students.map((s) => ({
+      user_id: userId,
+      id: s.id,
+      data: s as unknown as Record<string, unknown>,
+    }));
+    const { error } = await supabase
+      .from('students')
+      .upsert(rows, { onConflict: 'user_id,id' });
+    if (error) { setStorageOk(false); return; }
+    // Merge into local state
+    skipSave.current = true;
+    setStudents((prev) => {
+      const next = [...prev];
+      m.students.forEach((s) => {
+        const i = next.findIndex((p) => p.id === s.id);
+        if (i >= 0) next[i] = s;
+        else next.push(s);
+      });
+      return next;
+    });
+    try { localStorage.setItem(MIGRATED_KEY, '1'); } catch { /* ignore */ }
+    setMigrationVisible(false);
+  }, [userId]);
+
+  const dismissMigration = useCallback(() => {
+    setMigrationVisible(false);
+  }, []);
+
+  return {
+    students,
+    storageOk,
+    loading,
+    addStudent,
+    updateStudent,
+    deleteStudent,
+    addExample,
+    exportJson,
+    importJson,
+    migrationVisible,
+    migrationCount: migration.current.students.length,
+    uploadMigration,
+    dismissMigration,
+  };
 }
