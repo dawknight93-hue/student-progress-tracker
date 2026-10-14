@@ -1,0 +1,101 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: 238 241 245;
+  --surface: 255 255 255;
+  --surface2: 229 233 239;
+  --ink: 18 28 40;
+  --muted: 86 100 117;
+  --line: 205 213 223;
+  --accent: 27 93 176;
+  --accent-ink: 255 255 255;
+  --ok: 29 111 70;
+  --ok-bg: 220 241 229;
+  --warn: 143 84 0;
+  --warn-bg: 251 233 195;
+  --bad: 173 42 34;
+  --bad-bg: 250 223 219;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: 13 20 29;
+    --surface: 21 31 43;
+    --surface2: 29 42 58;
+    --ink: 231 236 243;
+    --muted: 148 162 180;
+    --line: 42 57 75;
+    --accent: 111 168 242;
+    --accent-ink: 11 20 32;
+    --ok: 98 208 154;
+    --ok-bg: 21 50 34;
+    --warn: 241 187 90;
+    --warn-bg: 58 45 15;
+    --bad: 243 141 132;
+    --bad-bg: 62 27 24;
+    color-scheme: dark;
+  }
+}
+
+@layer base {
+  html,
+  body {
+    @apply bg-bg text-ink font-body;
+    font-size: 15px;
+    line-height: 1.45;
+  }
+  h1,
+  h2,
+  h3 {
+    @apply font-display font-semibold;
+    letter-spacing: 0.01em;
+    text-wrap: balance;
+  }
+  :focus-visible {
+    outline: 2px solid rgb(var(--accent));
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex min-h-[38px] items-center justify-center gap-2 rounded border border-line bg-surface px-3.5 py-2 text-sm font-medium transition-colors hover:border-accent disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply border-accent bg-accent text-accentInk hover:brightness-110;
+  }
+  .btn-sm {
+    @apply min-h-[30px] px-2.5 py-1 text-[13px];
+  }
+  .btn-danger {
+    @apply text-bad;
+  }
+  .btn-danger-armed {
+    @apply border-bad bg-bad text-bg;
+  }
+  .input {
+    @apply min-h-[38px] w-full rounded border border-line bg-surface px-2.5 py-2;
+  }
+  .label {
+    @apply text-[13px] font-semibold;
+  }
+  .hint {
+    @apply text-[12.5px] text-muted;
+  }
+  .eyebrow {
+    @apply font-display text-[13px] font-semibold uppercase tracking-[0.09em] text-muted;
+  }
+  .panel {
+    @apply flex min-w-0 flex-col gap-3 rounded-md border border-line bg-surface p-4;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
