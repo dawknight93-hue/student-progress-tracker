@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
-import { Download, LogOut, Plus, Upload } from 'lucide-react';
+import { BookOpen, Download, LogOut, Plus, Upload } from 'lucide-react';
 import { Board } from './components/Board';
 import type { SortKey } from './components/Board';
+import { CurriculumEditor } from './components/CurriculumEditor';
 import { LogModal } from './components/LogModal';
 import { SignIn } from './components/SignIn';
 import { StudentDetail } from './components/StudentDetail';
 import { StudentModal } from './components/StudentModal';
 import type { StudentFields } from './components/StudentModal';
 import { Toast } from './components/Toast';
-import { COURSES } from './curriculum';
 import { useStudents } from './hooks/useStudents';
+import { CurriculumProvider } from './lib/CurriculumProvider';
+import { useCurriculum } from './lib/curriculum-context';
 import { supabase } from './lib/supabase';
 import { todayStr } from './lib/dates';
 import { summarize } from './lib/progress';
@@ -31,6 +33,8 @@ type Modal =
   | { kind: 'student'; editId: string | null }
   | { kind: 'log'; lessonNum: number; entry: LogEntry | null }
   | null;
+
+type View = 'board' | 'curriculum';
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -55,12 +59,18 @@ export default function App() {
     return <SignIn />;
   }
 
-  return <Tracker userId={session.user.id} email={session.user.email ?? ''} />;
+  return (
+    <CurriculumProvider userId={session.user.id}>
+      <Tracker userId={session.user.id} email={session.user.email ?? ''} />
+    </CurriculumProvider>
+  );
 }
 
 function Tracker({ userId, email }: { userId: string; email: string }) {
-  const store = useStudents(userId);
+  const { courses } = useCurriculum();
+  const store = useStudents(userId, courses);
   const { students } = store;
+  const [view, setView] = useState<View>('board');
   const [openId, setOpenId] = useState<string | null>(null);
   const [modal, setModal] = useState<Modal>(null);
   const [toast, setToast] = useState('');
@@ -101,7 +111,7 @@ function Tracker({ userId, email }: { userId: string; email: string }) {
     const exists = open.logs.some((l) => l.id === entry.id);
     const logs = exists ? open.logs.map((l) => (l.id === entry.id ? entry : l)) : [...open.logs, entry];
     store.updateStudent(open.id, { logs });
-    const after = summarize({ courseId: open.courseId, logs }, recapDays);
+    const after = summarize({ courseId: open.courseId, logs }, recapDays, todayStr(), courses);
     setToast(after.next ? `Saved. Next up: Lesson ${after.next.n}.` : 'Saved. Course complete.');
     setModal(null);
   };
@@ -150,38 +160,43 @@ function Tracker({ userId, email }: { userId: string; email: string }) {
         </div>
       </header>
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <label className="flex items-center gap-2 text-[13px] text-muted" htmlFor="recap-days">
-            Recap after
-            <input
-              id="recap-days"
-              type="number"
-              className="input !w-[72px]"
-              min={1}
-              max={365}
-              value={recapDays}
-              onChange={(e) => {
-                const n = Math.round(Number(e.target.value));
-                if (Number.isFinite(n) && n >= 1 && n <= 365) setRecapDays(n);
-              }}
-            />
-            days
-          </label>
-          <button type="button" className="btn" onClick={doExport} disabled={!students.length}>
-            <Download size={15} aria-hidden="true" /> Export
-          </button>
-          <button type="button" className="btn" onClick={() => fileRef.current?.click()}>
-            <Upload size={15} aria-hidden="true" /> Import
-          </button>
-          <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" onChange={(e) => void doImport(e.target.files?.[0])} />
-          <button type="button" className="btn btn-primary" onClick={() => setModal({ kind: 'student', editId: null })}>
-            <Plus size={15} aria-hidden="true" /> Add student
-          </button>
+      {view === 'board' && (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="flex items-center gap-2 text-[13px] text-muted" htmlFor="recap-days">
+              Recap after
+              <input
+                id="recap-days"
+                type="number"
+                className="input !w-[72px]"
+                min={1}
+                max={365}
+                value={recapDays}
+                onChange={(e) => {
+                  const n = Math.round(Number(e.target.value));
+                  if (Number.isFinite(n) && n >= 1 && n <= 365) setRecapDays(n);
+                }}
+              />
+              days
+            </label>
+            <button type="button" className="btn" onClick={doExport} disabled={!students.length}>
+              <Download size={15} aria-hidden="true" /> Export
+            </button>
+            <button type="button" className="btn" onClick={() => fileRef.current?.click()}>
+              <Upload size={15} aria-hidden="true" /> Import
+            </button>
+            <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" onChange={(e) => void doImport(e.target.files?.[0])} />
+            <button type="button" className="btn" onClick={() => setView('curriculum')}>
+              <BookOpen size={15} aria-hidden="true" /> Curriculum
+            </button>
+            <button type="button" className="btn btn-primary" onClick={() => setModal({ kind: 'student', editId: null })}>
+              <Plus size={15} aria-hidden="true" /> Add student
+            </button>
+          </div>
         </div>
-      </div>
+      )}
 
-      {store.migrationVisible && (
+      {store.migrationVisible && view === 'board' && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-accent bg-surface px-4 py-3">
           <span className="text-sm">
             Found {store.migrationCount} {store.migrationCount === 1 ? 'student' : 'students'} saved in this browser. Upload them to your account?
@@ -199,7 +214,9 @@ function Tracker({ userId, email }: { userId: string; email: string }) {
         </div>
       )}
 
-      {store.loading ? (
+      {view === 'curriculum' ? (
+        <CurriculumEditor onBack={() => setView('board')} onToast={setToast} />
+      ) : store.loading ? (
         <div className="py-10 text-center text-muted">Loading your students…</div>
       ) : (
         <main className="flex flex-col gap-4">
@@ -207,9 +224,10 @@ function Tracker({ userId, email }: { userId: string; email: string }) {
             <StudentDetail
               student={open}
               recapDays={recapDays}
+              course={courses[open.courseId]}
               onBack={() => setOpenId(null)}
               onEdit={() => setModal({ kind: 'student', editId: open.id })}
-              onLog={(n, entry) => setModal({ kind: 'log', lessonNum: n ?? COURSES[open.courseId].lessons[0].n, entry })}
+              onLog={(n, entry) => setModal({ kind: 'log', lessonNum: n ?? courses[open.courseId].lessons[0].n, entry })}
               onUpdate={(patch) => store.updateStudent(open.id, patch)}
               onDelete={() => {
                 store.deleteStudent(open.id);
@@ -227,6 +245,7 @@ function Tracker({ userId, email }: { userId: string; email: string }) {
               recapDays={recapDays}
               sortBy={sortBy}
               showArchived={showArchived}
+              courses={courses}
               onSort={setSortBy}
               onShowArchived={setShowArchived}
               onOpen={setOpenId}
@@ -241,9 +260,9 @@ function Tracker({ userId, email }: { userId: string; email: string }) {
         Data is saved to your account and syncs across devices. Use Export for a backup.
       </footer>
 
-      {modal?.kind === 'student' && <StudentModal editing={editing} onSave={saveStudent} onClose={() => setModal(null)} />}
+      {modal?.kind === 'student' && <StudentModal editing={editing} courses={courses} onSave={saveStudent} onClose={() => setModal(null)} />}
       {modal?.kind === 'log' && open && (
-        <LogModal course={COURSES[open.courseId]} initialLesson={modal.lessonNum} entry={modal.entry} onSave={saveLog} onClose={() => setModal(null)} />
+        <LogModal course={courses[open.courseId]} initialLesson={modal.lessonNum} entry={modal.entry} onSave={saveLog} onClose={() => setModal(null)} />
       )}
       {toast && <Toast message={toast} onDone={clearToast} />}
     </div>

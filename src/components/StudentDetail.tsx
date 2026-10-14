@@ -3,12 +3,14 @@ import { ArrowLeft, ExternalLink } from 'lucide-react';
 import { RATING_LABEL } from '../curriculum';
 import { ago, daysBetween, fmtDate, todayStr } from '../lib/dates';
 import { summarize } from '../lib/progress';
+import type { Course } from '../types';
 import type { Lesson, LogEntry, Student, TestStatus } from '../types';
 import { Pill, ProgressStrip, stateTone } from './ui';
 
 interface Props {
   student: Student;
   recapDays: number;
+  course: Course;
   onBack: () => void;
   onEdit: () => void;
   onLog: (lessonNum: number | null, entry: LogEntry | null) => void;
@@ -19,8 +21,8 @@ interface Props {
 
 const STATE_LABEL = { none: 'Not started', progress: 'In progress', review: 'Needs review', done: 'Done' } as const;
 
-export function StudentDetail({ student: s, recapDays, onBack, onEdit, onLog, onUpdate, onDelete, onDeleteLog }: Props) {
-  const sum = summarize(s, recapDays);
+export function StudentDetail({ student: s, recapDays, course, onBack, onEdit, onLog, onUpdate, onDelete, onDeleteLog }: Props) {
+  const sum = summarize(s, recapDays, todayStr(), { [s.courseId]: course } as Record<typeof s.courseId, Course>);
   const [open, setOpen] = useState<number | null>(null);
   const [armed, setArmed] = useState<'delete' | 'log' | null>(null);
   const [armedLog, setArmedLog] = useState<string | null>(null);

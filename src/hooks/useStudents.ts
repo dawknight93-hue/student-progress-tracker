@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { COURSES } from '../curriculum';
 import { daysAgoStr, todayStr, uid } from '../lib/dates';
 import { supabase } from '../lib/supabase';
-import type { Student } from '../types';
+import type { Course, Student } from '../types';
 
 const OLD_KEY = 'student-progress-tracker:v1';
 const MIGRATED_KEY = 'student-progress-tracker:v1:migrated';
@@ -24,14 +24,14 @@ function readMigration(): MigrationData {
   }
 }
 
-function isStudent(x: unknown): x is Student {
+function isStudent(x: unknown, courses: Record<string, Course>): x is Student {
   if (!x || typeof x !== 'object') return false;
   const s = x as Partial<Student>;
   return (
     typeof s.id === 'string' &&
     typeof s.name === 'string' &&
     typeof s.courseId === 'string' &&
-    s.courseId in COURSES &&
+    s.courseId in courses &&
     Array.isArray(s.logs)
   );
 }
@@ -44,7 +44,7 @@ export interface NewStudent {
   testDate: string;
 }
 
-export function useStudents(userId: string | null) {
+export function useStudents(userId: string | null, courses: Record<string, Course> = COURSES) {
   const [students, setStudents] = useState<Student[]>([]);
   const [storageOk, setStorageOk] = useState(true);
   const [loading, setLoading] = useState(true);
@@ -78,9 +78,9 @@ export function useStudents(userId: string | null) {
         setLoading(false);
         return;
       }
-      const loaded = (data ?? [])
+      const loaded: Student[] = (data ?? [])
         .map((r) => r.data as unknown)
-        .filter(isStudent);
+        .filter((r): r is Student => isStudent(r, courses));
       skipSave.current = true;
       lastSynced.current = loaded;
       setStudents(loaded);
@@ -169,13 +169,13 @@ export function useStudents(userId: string | null) {
     if (error) return;
     // A save may have started during the fetch; abort if so.
     if (saveRunning.current || saveQueued.current) return;
-    const loaded = (data ?? [])
+    const loaded: Student[] = (data ?? [])
       .map((r) => r.data as unknown)
-      .filter(isStudent);
+      .filter((r): r is Student => isStudent(r, courses));
     skipSave.current = true;
     lastSynced.current = loaded;
     setStudents(loaded);
-  }, [userId]);
+  }, [userId, courses]);
 
   // Reload when the tab becomes visible or focused, so other devices' changes appear.
   useEffect(() => {
@@ -256,7 +256,7 @@ export function useStudents(userId: string | null) {
   const importJson = useCallback(
     (text: string): { added: number; replaced: number } => {
       const parsed = JSON.parse(text) as { students?: unknown[] };
-      const incoming = (parsed.students ?? []).filter(isStudent);
+      const incoming = (parsed.students ?? []).filter((s) => isStudent(s, courses));
       if (!incoming.length) throw new Error('No students found in that file.');
       const known = new Set(latest.current.map((p) => p.id));
       const replaced = incoming.filter((s) => known.has(s.id)).length;

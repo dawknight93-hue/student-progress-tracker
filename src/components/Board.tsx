@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { ago, daysBetween, fmtDate, todayStr } from '../lib/dates';
 import { summarize } from '../lib/progress';
 import type { Summary } from '../lib/progress';
-import type { Student } from '../types';
+import type { Course, CourseId, Student } from '../types';
 import { Pill, ProgressStrip } from './ui';
 
 export type SortKey = 'attention' | 'recent' | 'name';
@@ -12,6 +12,7 @@ interface Props {
   recapDays: number;
   sortBy: SortKey;
   showArchived: boolean;
+  courses: Record<CourseId, Course>;
   onSort: (k: SortKey) => void;
   onShowArchived: (v: boolean) => void;
   onOpen: (id: string) => void;
@@ -19,13 +20,13 @@ interface Props {
   onExample: () => void;
 }
 
-export function Board({ students, recapDays, sortBy, showArchived, onSort, onShowArchived, onOpen, onAdd, onExample }: Props) {
+export function Board({ students, recapDays, sortBy, showArchived, courses, onSort, onShowArchived, onOpen, onAdd, onExample }: Props) {
   const archivedCount = students.filter((s) => s.status === 'archived').length;
 
   const rows = useMemo(() => {
     const list = students
       .filter((s) => showArchived || s.status !== 'archived')
-      .map((s) => ({ s, sum: summarize(s, recapDays) }));
+      .map((s) => ({ s, sum: summarize(s, recapDays, todayStr(), courses) }));
     list.sort((a, b) => {
       if (sortBy === 'name') return a.s.name.localeCompare(b.s.name);
       if (sortBy === 'recent') return (b.sum.last?.date ?? '').localeCompare(a.sum.last?.date ?? '');
@@ -34,7 +35,7 @@ export function Board({ students, recapDays, sortBy, showArchived, onSort, onSho
       return db - da || a.s.name.localeCompare(b.s.name);
     });
     return list;
-  }, [students, recapDays, sortBy, showArchived]);
+  }, [students, recapDays, sortBy, showArchived, courses]);
 
   if (!students.length) {
     return (

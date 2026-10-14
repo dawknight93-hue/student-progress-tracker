@@ -1,6 +1,6 @@
 import { COURSES } from '../curriculum.ts';
 import { daysBetween, todayStr } from './dates.ts';
-import type { Course, Lesson, LessonState, LogEntry, Student } from '../types.ts';
+import type { Course, CourseId, Lesson, LessonState, LogEntry, Student } from '../types.ts';
 
 export interface LessonStatus {
   state: LessonState;
@@ -42,9 +42,10 @@ export function stateOf(e: LogEntry | undefined | null): LessonState {
 export function summarize(
   student: Pick<Student, 'courseId' | 'logs'>,
   recapDays: number,
-  today: string = todayStr()
+  today: string = todayStr(),
+  courses: Record<CourseId, Course> = COURSES
 ): Summary {
-  const course = COURSES[student.courseId];
+  const course = courses[student.courseId];
   const sorted = sortLogs(student.logs);
   const latest = new Map<number, LogEntry>();
   sorted.forEach((l) => latest.set(l.lessonNum, l));

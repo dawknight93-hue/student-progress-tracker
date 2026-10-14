@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
-import { COURSES, COURSE_ORDER } from '../curriculum';
+import { COURSE_ORDER } from '../curriculum';
 import { todayStr } from '../lib/dates';
-import type { CourseId, Student } from '../types';
+import type { Course, CourseId, Student } from '../types';
 import { ModalShell } from './ui';
 
 export interface StudentFields {
@@ -15,11 +15,12 @@ export interface StudentFields {
 
 interface Props {
   editing: Student | null;
+  courses: Record<CourseId, Course>;
   onSave: (fields: StudentFields) => void;
   onClose: () => void;
 }
 
-export function StudentModal({ editing, onSave, onClose }: Props) {
+export function StudentModal({ editing, courses, onSave, onClose }: Props) {
   const [name, setName] = useState(editing?.name ?? '');
   const [courseId, setCourseId] = useState<CourseId>(editing?.courseId ?? 'private');
   const [goal, setGoal] = useState(editing?.goal ?? '');
@@ -46,7 +47,7 @@ export function StudentModal({ editing, onSave, onClose }: Props) {
           <select id="s-course" className="input" value={courseId} disabled={locked} onChange={(e) => setCourseId(e.target.value as CourseId)}>
             {COURSE_ORDER.map((k) => (
               <option key={k} value={k}>
-                {COURSES[k].name} ({COURSES[k].lessons.length} lessons)
+                {courses[k].name} ({courses[k].lessons.length} lessons)
               </option>
             ))}
           </select>
